@@ -10,4 +10,4 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -o /app/mcas
 
 FROM gcr.io/distroless/static-debian12
 COPY --from=build /app/mcas /mcas
-CMD ["/mcas"]
+ENTRYPOINT ["/mcas"]
