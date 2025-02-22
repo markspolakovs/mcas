@@ -26,8 +26,9 @@ type Options struct {
 	Scaler              struct {
 		AllowedServerSizes []string `help:"List of allowed server sizes" env:"ALLOWED_SIZES"`
 		Hetzner            struct {
-			APIKey     string `env:"API_KEY"`
-			ServerName string `env:"SERVER_NAME"`
+			APIKey               string        `env:"API_KEY"`
+			ServerName           string        `env:"SERVER_NAME"`
+			ServerTypesCacheTime time.Duration `help:"Server types cache time" default:"10m" env:"SERVER_TYPES_CACHE_TIME"`
 		} `embed:"" envprefix:"HETZNER_" prefix:"hetzner."`
 	} `embed:"" prefix:"scaler."`
 	Metrics struct {
@@ -75,7 +76,9 @@ func main() {
 		kongCtx.FatalIfErrorf(fmt.Errorf("failed to create prometheus metrics: %w", err))
 	}
 
-	scaler, err := hcloud.NewAutoscaler(args.Scaler.Hetzner.APIKey, args.Scaler.Hetzner.ServerName)
+	scaler, err := hcloud.NewAutoscaler(args.Scaler.Hetzner.APIKey, args.Scaler.Hetzner.ServerName, hcloud.HCloudAutoscalerOptions{
+		ServerTypesCacheLifetime: args.Scaler.Hetzner.ServerTypesCacheTime,
+	})
 	if err != nil {
 		kongCtx.FatalIfErrorf(fmt.Errorf("failed to create hcloud autoscaler: %w", err))
 	}

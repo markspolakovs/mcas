@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"slices"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/hetznercloud/hcloud-go/v2/hcloud"
@@ -16,9 +17,19 @@ type HCloudAutoscaler struct {
 	serverName string
 	api        *hcloud.Client
 	server     *hcloud.Server
+	opts       HCloudAutoscalerOptions
+
+	serverTypesCache []*hcloud.ServerType
+	serverTypesAge   time.Time
+
+	mux sync.Mutex
 }
 
-func NewAutoscaler(apiKey, serverName string) (*HCloudAutoscaler, error) {
+type HCloudAutoscalerOptions struct {
+	ServerTypesCacheLifetime time.Duration
+}
+
+func NewAutoscaler(apiKey, serverName string, opts HCloudAutoscalerOptions) (*HCloudAutoscaler, error) {
 	client := hcloud.NewClient(hcloud.WithToken(apiKey))
 	server, _, err := client.Server.GetByName(context.Background(), serverName)
 	if err != nil {
@@ -32,10 +43,13 @@ func NewAutoscaler(apiKey, serverName string) (*HCloudAutoscaler, error) {
 		serverName: serverName,
 		api:        client,
 		server:     server,
+		opts:       opts,
 	}, nil
 }
 
 func (a *HCloudAutoscaler) GetCurrentSize(ctx context.Context) (string, error) {
+	a.mux.Lock()
+	defer a.mux.Unlock()
 	var err error
 	a.server, _, err = a.api.Server.GetByID(ctx, a.server.ID)
 	if err != nil {
@@ -47,7 +61,23 @@ func (a *HCloudAutoscaler) GetCurrentSize(ctx context.Context) (string, error) {
 	return a.server.ServerType.Name, nil
 }
 
+func (a *HCloudAutoscaler) updateServerTypesUNLOCKED(ctx context.Context) error {
+	if a.serverTypesCache != nil && time.Since(a.serverTypesAge) < a.opts.ServerTypesCacheLifetime {
+		return nil
+	}
+	slog.Debug("updating server types cache")
+	types, err := a.api.ServerType.All(ctx)
+	if err != nil {
+		return fmt.Errorf("hcloud: failed to get server types: %w", err)
+	}
+	a.serverTypesCache = types
+	a.serverTypesAge = time.Now()
+	return nil
+}
+
 func (a *HCloudAutoscaler) GetAvailableSizes(ctx context.Context) ([]string, error) {
+	a.mux.Lock()
+	defer a.mux.Unlock()
 	if a.server != nil {
 		var err error
 		a.server, _, err = a.api.Server.GetByID(ctx, a.server.ID)
@@ -58,11 +88,11 @@ func (a *HCloudAutoscaler) GetAvailableSizes(ctx context.Context) ([]string, err
 			return nil, fmt.Errorf("hcloud: server not found")
 		}
 	}
-	types, err := a.api.ServerType.All(ctx)
+	err := a.updateServerTypesUNLOCKED(ctx)
 	if err != nil {
 		return nil, err
 	}
-	slices.SortFunc(types, func(a, b *hcloud.ServerType) int {
+	slices.SortFunc(a.serverTypesCache, func(a, b *hcloud.ServerType) int {
 		c1, err := strconv.ParseFloat(a.Pricings[0].Hourly.Gross, 64)
 		if err != nil {
 			panic(err)
@@ -79,8 +109,8 @@ func (a *HCloudAutoscaler) GetAvailableSizes(ctx context.Context) ([]string, err
 		}
 		return 0
 	})
-	rv := make([]string, 0, len(types))
-	for _, t := range types {
+	rv := make([]string, 0, len(a.serverTypesCache))
+	for _, t := range a.serverTypesCache {
 		if t.Architecture == a.server.ServerType.Architecture {
 			for _, pricing := range t.Pricings {
 				if pricing.Location.Name == a.server.Datacenter.Location.Name {
@@ -94,6 +124,8 @@ func (a *HCloudAutoscaler) GetAvailableSizes(ctx context.Context) ([]string, err
 }
 
 func (a *HCloudAutoscaler) StopServer(ctx context.Context) error {
+	a.mux.Lock()
+	defer a.mux.Unlock()
 	action, _, err := a.api.Server.Shutdown(ctx, a.server)
 	if err != nil {
 		return fmt.Errorf("hcloud: failed to shutdown server: %w", err)
@@ -126,10 +158,20 @@ func (a *HCloudAutoscaler) StopServer(ctx context.Context) error {
 }
 
 func (a *HCloudAutoscaler) ResizeServer(ctx context.Context, profile string) error {
-	serverType, _, err := a.api.ServerType.GetByName(ctx, profile)
+	a.mux.Lock()
+	defer a.mux.Unlock()
+	err := a.updateServerTypesUNLOCKED(ctx)
 	if err != nil {
-		return fmt.Errorf("hcloud: failed to get server type by name: %w", err)
+		return err
 	}
+	var serverType *hcloud.ServerType
+	for _, t := range a.serverTypesCache {
+		if t.Name == profile {
+			serverType = t
+			break
+		}
+	}
+
 	if serverType == nil {
 		return fmt.Errorf("hcloud: server type not found: %s", profile)
 	}
