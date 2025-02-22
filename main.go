@@ -8,7 +8,9 @@ import (
 	"os/signal"
 	"time"
 
+	"github.com/BurntSushi/toml"
 	"github.com/alecthomas/kong"
+
 	"github.com/markspolakovs/mcas/autoscaler"
 	"github.com/markspolakovs/mcas/metrics"
 	"github.com/markspolakovs/mcas/providers/hcloud"
@@ -17,11 +19,12 @@ import (
 )
 
 type Options struct {
-	LogLevel slog.Level    `help:"Log level" default:"info" env:"LOG_LEVEL"`
-	Interval time.Duration `help:"Interval between checks" default:"1m"`
-	Scaler   struct {
-		AllowedScaleProfiles []string `help:"List of allowed scale profiles" env:"ALLOWED_SCALE_PROFILES"`
-		Hetzner              struct {
+	LogLevel  slog.Level    `help:"Log level" default:"info" env:"LOG_LEVEL"`
+	Interval  time.Duration `help:"Interval between checks" default:"1m"`
+	RulesFile string        `help:"Path to the rules file" env:"RULES_FILE"`
+	Scaler    struct {
+		AllowedServerSizes []string `help:"List of allowed server sizes" env:"ALLOWED_SIZES"`
+		Hetzner            struct {
 			APIKey     string `env:"API_KEY"`
 			ServerName string `env:"SERVER_NAME"`
 		} `embed:"" envprefix:"HETZNER_" prefix:"hetzner."`
@@ -36,8 +39,19 @@ type Options struct {
 			Address  string `help:"RCON address" env:"ADDRESS"`
 			Password string `help:"RCON password" env:"PASSWORD"`
 		} `embed:"" prefix:"rcon." envprefix:"RCON_"`
-		PreShutdownMessage string `help:"Message to send to players before shutting down" env:"PRE_SHUTDOWN_MESSAGE" default:"Server going down for resizing"`
 	} `embed:"" prefix:"minecraft."`
+}
+
+func loadRules(args Options) ([]autoscaler.ScaleRule, []autoscaler.ScaleSchedule, error) {
+	var data struct {
+		Rules    []autoscaler.ScaleRule     `toml:"rules"`
+		Schedule []autoscaler.ScaleSchedule `toml:"schedule"`
+	}
+	_, err := toml.DecodeFile(args.RulesFile, &data)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to load rules file: %w", err)
+	}
+	return data.Rules, data.Schedule, nil
 }
 
 func main() {
@@ -49,6 +63,12 @@ func main() {
 	}))
 	slog.SetDefault(logger)
 
+	rules, schedule, err := loadRules(args)
+	if err != nil {
+		kongCtx.FatalIfErrorf(err)
+	}
+	logger.Debug("loaded rules", slog.Any("rules", rules))
+
 	metrics, err := metrics.NewPrometheusMCMetrics(args.Metrics.Address, args.Metrics.Username, args.Metrics.Password)
 	if err != nil {
 		kongCtx.FatalIfErrorf(fmt.Errorf("failed to create prometheus metrics: %w", err))
@@ -58,22 +78,25 @@ func main() {
 	if err != nil {
 		kongCtx.FatalIfErrorf(fmt.Errorf("failed to create hcloud autoscaler: %w", err))
 	}
-	scaler.GetAvailableSizes(context.Background())
 
 	a := &autoscaler.Autoscaler{
 		Logger:  logger,
 		Metrics: metrics,
 		Scaler:  scaler,
 
-		AllowedScaleProfiles: args.Scaler.AllowedScaleProfiles,
+		AllowedSizes: args.Scaler.AllowedServerSizes,
+		Rules:        rules,
+		Schedule:     schedule,
 
-		RconAddress:        args.Minecraft.RCON.Address,
-		RconPassword:       args.Minecraft.RCON.Password,
-		PreShutdownMessage: args.Minecraft.PreShutdownMessage,
+		RconAddress:  args.Minecraft.RCON.Address,
+		RconPassword: args.Minecraft.RCON.Password,
 	}
+
 	ctx := context.Background()
 	ctx, cancel := signal.NotifyContext(ctx, os.Interrupt)
 	defer cancel()
+
+	a.SetupSchedule(ctx)
 
 	logger.Info("core loop starting", slog.Any("interval", args.Interval))
 	for {

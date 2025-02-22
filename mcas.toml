@@ -1,0 +1,12 @@
+[[rules]]
+query = "quantile_over_time(0.5, mc_tps[2m]) < 16"
+action = 1
+
+[[rules]]
+query = "sum by (instance) (max_over_time(mc_players_online_total[30m])) == 0"
+action = -100
+
+[[schedule]]
+cron = " 30 17 * * *"
+action = 1
+if_size = "= 0"

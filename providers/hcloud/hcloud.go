@@ -82,12 +82,12 @@ func (a *HCloudAutoscaler) GetAvailableSizes(ctx context.Context) ([]string, err
 	rv := make([]string, 0, len(types))
 	for _, t := range types {
 		if t.Architecture == a.server.ServerType.Architecture {
-			// for _, pricing := range t.Pricings {
-			// 	if pricing.Location.Name == a.server.Datacenter.Location.Name {
-			rv = append(rv, t.Name)
-			// 		break
-			// 	}
-			// }
+			for _, pricing := range t.Pricings {
+				if pricing.Location.Name == a.server.Datacenter.Location.Name {
+					rv = append(rv, t.Name)
+					break
+				}
+			}
 		}
 	}
 	return rv, nil
