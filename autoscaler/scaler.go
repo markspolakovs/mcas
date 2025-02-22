@@ -6,15 +6,12 @@ import (
 	"log/slog"
 	"regexp"
 	"slices"
-	"strconv"
-	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/Tnze/go-mc/net"
 	"github.com/markspolakovs/mcas/metrics"
 	"github.com/markspolakovs/mcas/providers/hcloud"
-	"github.com/prometheus/common/model"
 	"github.com/robfig/cron/v3"
 )
 
@@ -37,33 +34,6 @@ type Autoscaler struct {
 }
 
 const PreShutdownMessage = `§3Yeti Says: §rServer is eligible for re-sizing. The server will be stopped and resized once nobody is online. The sizing will take a few minutes. If the server is not empty within the next 5 minutes, the re-sizing will be cancelled.`
-
-type ScaleRule struct {
-	Query  string `toml:"query"`
-	Action int    `toml:"action"`
-}
-
-type ScaleSchedule struct {
-	Cron   string `toml:"cron"`
-	Action int    `toml:"action"`
-	IfSize string `toml:"if_size"`
-
-	a   *Autoscaler
-	ctx context.Context
-}
-
-func (a *Autoscaler) EvaluateRule(ctx context.Context, rule ScaleRule) (bool, error) {
-	r, err := a.Metrics.Query(ctx, rule.Query)
-	if err != nil {
-		return false, fmt.Errorf("failed to query for rule %q: %w", rule.Query, err)
-	}
-	v, ok := r.(model.Vector)
-	if !ok {
-		return false, fmt.Errorf("expected vector result, got %T", r)
-	}
-	slog.Debug("evaluating rule", slog.String("query", rule.Query), slog.Any("result", v))
-	return len(v) > 0, nil
-}
 
 func (a *Autoscaler) getCurrentSize(ctx context.Context) (int, []string, error) {
 	sizes, err := a.Scaler.GetAvailableSizes(ctx)
@@ -111,7 +81,7 @@ func (a *Autoscaler) CanScale(ctx context.Context, direction int) (bool, error) 
 	return ok, nil
 }
 
-func (a *Autoscaler) prepareForScalingActionUNLOCKED(ctx context.Context) error {
+func (a *Autoscaler) prepareForScalingAction(ctx context.Context) error {
 	rcon, err := net.DialRCON(a.RconAddress, a.RconPassword)
 	if err != nil {
 		return fmt.Errorf("failed to dial RCON: %w", err)
@@ -193,7 +163,7 @@ func (a *Autoscaler) DoScale(ctx context.Context, direction int) error {
 
 	_, newSize := a.getNewSize(currentIndex, direction, sizess)
 	slog.Info("scaling", slog.String("current", sizess[currentIndex]), slog.String("new", newSize))
-	err = a.prepareForScalingActionUNLOCKED(ctx)
+	err = a.prepareForScalingAction(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to prepare for scaling action: %w", err)
 	}
@@ -212,112 +182,4 @@ func (a *Autoscaler) DoScale(ctx context.Context, direction int) error {
 
 	slog.Info("server resized")
 	return nil
-}
-
-func (a *Autoscaler) CoreLoop(ctx context.Context) error {
-	if a.scalingInProgress.Load() {
-		a.Logger.Info("scaling in progress, skipping")
-		return nil
-	}
-	for _, rule := range a.Rules {
-		res, err := a.EvaluateRule(ctx, rule)
-		if err != nil {
-			return fmt.Errorf("failed to evaluate rule: %w", err)
-		}
-		if !res {
-			slog.Debug("rule not met", slog.String("query", rule.Query))
-			continue
-		}
-		slog.Info("rule met", slog.String("query", rule.Query), slog.Int("action", rule.Action))
-		ok, err := a.CanScale(ctx, rule.Action)
-		if err != nil {
-			return fmt.Errorf("failed to check if can scale: %w", err)
-		}
-		if ok {
-			return a.DoScale(ctx, rule.Action)
-		} else {
-			return nil
-		}
-	}
-	a.Logger.Info("no scaling action needed")
-	return nil
-}
-
-func (a *Autoscaler) SetupSchedule(ctx context.Context) {
-	a.cron = cron.New()
-	for i := range a.Schedule {
-		sch := &a.Schedule[i]
-		sch.a = a
-		sch.ctx = ctx
-		a.cron.AddJob(sch.Cron, sch)
-		slog.Debug("loaded schedule", slog.Any("schedule", sch))
-	}
-	a.cron.Start()
-	go func() {
-		<-ctx.Done()
-		a.cron.Stop()
-	}()
-}
-
-func (s *ScaleSchedule) Run() {
-	slog.Info("considering scheduled scale", slog.Any("schedule", s))
-	ctx := s.ctx
-	current, sizes, err := s.a.getCurrentSize(ctx)
-	if err != nil {
-		s.a.Logger.Error("failed to get current size", slog.String("err", err.Error()))
-		return
-	}
-	if s.IfSize != "" {
-		if !s.evaluateIfSize(current) {
-			s.a.Logger.Info("not scaling because IfSize condition not met")
-			return
-		}
-	}
-
-	ok, err := s.a.CanScale(ctx, s.Action)
-	if err != nil {
-		s.a.Logger.Error("failed to check if can scale", slog.String("err", err.Error()))
-		return
-	}
-	if !ok {
-		s.a.Logger.Debug("not scaling because no eligible size")
-		return
-	}
-
-	_, newSize := s.a.getNewSize(current, s.Action, sizes)
-	s.a.Logger.Info("scheduled scale", slog.String("current", sizes[current]), slog.String("new", newSize))
-
-	err = s.a.DoScale(ctx, s.Action)
-	if err != nil {
-		s.a.Logger.Error("failed to scale", slog.String("err", err.Error()))
-		return
-	}
-}
-
-func (s *ScaleSchedule) evaluateIfSize(current int) bool {
-	op, operandStr, ok := strings.Cut(s.IfSize, " ")
-	if !ok {
-		s.a.Logger.Error("invalid IfSize", slog.String("IfSize", s.IfSize))
-		return false
-	}
-	operand, err := strconv.Atoi(operandStr)
-	if err != nil {
-		s.a.Logger.Error("failed to parse operand", slog.String("operand", operandStr), slog.String("err", err.Error()))
-		return false
-	}
-	switch op {
-	case ">":
-		return current > operand
-	case "<":
-		return current < operand
-	case ">=":
-		return current >= operand
-	case "<=":
-		return current <= operand
-	case "==":
-	case "=":
-		return current == operand
-	}
-	s.a.Logger.Error("invalid operator", slog.String("operator", op))
-	return false
 }
