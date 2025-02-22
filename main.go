@@ -19,10 +19,11 @@ import (
 )
 
 type Options struct {
-	LogLevel  slog.Level    `help:"Log level" default:"info" env:"LOG_LEVEL"`
-	Interval  time.Duration `help:"Interval between checks" default:"1m" env:"INTERVAL"`
-	RulesFile string        `help:"Path to the rules file" env:"RULES_FILE"`
-	Scaler    struct {
+	LogLevel            slog.Level    `help:"Log level" default:"info" env:"LOG_LEVEL"`
+	Interval            time.Duration `help:"Interval between checks" default:"1m" env:"INTERVAL"`
+	MinTimeBetweenScale time.Duration `help:"Minimum time between scaling" default:"1h" env:"MIN_TIME_BETWEEN_SCALE"`
+	RulesFile           string        `help:"Path to the rules file" env:"RULES_FILE"`
+	Scaler              struct {
 		AllowedServerSizes []string `help:"List of allowed server sizes" env:"ALLOWED_SIZES"`
 		Hetzner            struct {
 			APIKey     string `env:"API_KEY"`
@@ -79,7 +80,7 @@ func main() {
 		kongCtx.FatalIfErrorf(fmt.Errorf("failed to create hcloud autoscaler: %w", err))
 	}
 
-	a := &autoscaler.Autoscaler{
+	a := autoscaler.NewAutoscaler(autoscaler.AutoScalerConfig{
 		Logger:  logger,
 		Metrics: metrics,
 		Scaler:  scaler,
@@ -90,7 +91,7 @@ func main() {
 
 		RconAddress:  args.Minecraft.RCON.Address,
 		RconPassword: args.Minecraft.RCON.Password,
-	}
+	})
 
 	ctx := context.Background()
 	ctx, cancel := signal.NotifyContext(ctx, os.Interrupt)
@@ -104,6 +105,17 @@ func main() {
 		err = a.CoreLoop(ctx)
 		if err != nil {
 			logger.Error("core loop error", slog.String("error", err.Error()))
+		}
+		select {
+		case last := <-a.LastScaledAt():
+			next := last.Add(args.MinTimeBetweenScale)
+			logger.Info("waiting before scaling again", slog.Time("next", next))
+			select {
+			case <-time.After(time.Until(next)):
+			case <-ctx.Done():
+				return
+			}
+		default:
 		}
 		select {
 		case <-ctx.Done():

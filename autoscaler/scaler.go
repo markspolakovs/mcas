@@ -15,7 +15,7 @@ import (
 	"github.com/robfig/cron/v3"
 )
 
-type Autoscaler struct {
+type AutoScalerConfig struct {
 	Logger  *slog.Logger
 	Metrics *metrics.PrometheusMCMetrics
 	Scaler  *hcloud.HCloudAutoscaler
@@ -25,12 +25,25 @@ type Autoscaler struct {
 	RconAddress  string
 	RconPassword string
 
-	scalingInProgress atomic.Bool
-
 	Rules    []ScaleRule
 	Schedule []ScaleSchedule
+}
 
-	cron *cron.Cron
+// Ensures that an Autoscaler cannot be created except by using NewAutoscaler
+type cfg = AutoScalerConfig
+type Autoscaler struct {
+	cfg
+
+	scalingInProgress atomic.Bool
+	cron              *cron.Cron
+	lastScaledAt      chan time.Time
+}
+
+func NewAutoscaler(cfg AutoScalerConfig) *Autoscaler {
+	return &Autoscaler{
+		cfg:          cfg,
+		lastScaledAt: make(chan time.Time, 1),
+	}
 }
 
 const PreShutdownMessage = `§3Yeti Says: §rServer is eligible for re-sizing. The server will be stopped and resized once nobody is online. The sizing will take a few minutes. If the server is not empty within the next 5 minutes, the re-sizing will be cancelled.`
@@ -181,5 +194,10 @@ func (a *Autoscaler) DoScale(ctx context.Context, direction int) error {
 	}
 
 	slog.Info("server resized")
+	a.lastScaledAt <- time.Now()
 	return nil
+}
+
+func (a *Autoscaler) LastScaledAt() <-chan time.Time {
+	return a.lastScaledAt
 }
