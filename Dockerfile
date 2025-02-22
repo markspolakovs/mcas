@@ -5,8 +5,8 @@ WORKDIR /app
 RUN go mod download
 
 COPY . /app
-ARG TARGETPLATFORM
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETPLATFORM go build -o /app/mcas
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -o /app/mcas
 
 FROM gcr.io/distroless/static-debian12
 COPY --from=build /app/mcas /mcas
