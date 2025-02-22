@@ -20,7 +20,7 @@ import (
 
 type Options struct {
 	LogLevel  slog.Level    `help:"Log level" default:"info" env:"LOG_LEVEL"`
-	Interval  time.Duration `help:"Interval between checks" default:"1m"`
+	Interval  time.Duration `help:"Interval between checks" default:"1m" env:"INTERVAL"`
 	RulesFile string        `help:"Path to the rules file" env:"RULES_FILE"`
 	Scaler    struct {
 		AllowedServerSizes []string `help:"List of allowed server sizes" env:"ALLOWED_SIZES"`
