@@ -88,9 +88,10 @@ func main() {
 		Metrics: metrics,
 		Scaler:  scaler,
 
-		AllowedSizes: args.Scaler.AllowedServerSizes,
-		Rules:        rules,
-		Schedule:     schedule,
+		AllowedSizes:          args.Scaler.AllowedServerSizes,
+		Rules:                 rules,
+		Schedule:              schedule,
+		MinTimeBetweenActions: args.MinTimeBetweenScale,
 
 		RconAddress:  args.Minecraft.RCON.Address,
 		RconPassword: args.Minecraft.RCON.Password,
@@ -108,17 +109,6 @@ func main() {
 		err = a.CoreLoop(ctx)
 		if err != nil {
 			logger.Error("core loop error", slog.String("error", err.Error()))
-		}
-		select {
-		case last := <-a.LastScaledAt():
-			next := last.Add(args.MinTimeBetweenScale)
-			logger.Info("waiting before scaling again", slog.Time("next", next))
-			select {
-			case <-time.After(time.Until(next)):
-			case <-ctx.Done():
-				return
-			}
-		default:
 		}
 		select {
 		case <-ctx.Done():

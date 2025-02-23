@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"regexp"
 	"slices"
-	"sync/atomic"
+	"sync"
 	"time"
 
 	"github.com/Tnze/go-mc/net"
@@ -25,6 +25,8 @@ type AutoScalerConfig struct {
 	RconAddress  string
 	RconPassword string
 
+	MinTimeBetweenActions time.Duration
+
 	Rules    []ScaleRule
 	Schedule []ScaleSchedule
 }
@@ -34,15 +36,14 @@ type cfg = AutoScalerConfig
 type Autoscaler struct {
 	cfg
 
-	scalingInProgress atomic.Bool
-	cron              *cron.Cron
-	lastScaledAt      chan time.Time
+	scaleLock    sync.Mutex
+	cron         *cron.Cron
+	lastScaledAt time.Time
 }
 
 func NewAutoscaler(cfg AutoScalerConfig) *Autoscaler {
 	return &Autoscaler{
-		cfg:          cfg,
-		lastScaledAt: make(chan time.Time, 1),
+		cfg: cfg,
 	}
 }
 
@@ -165,10 +166,13 @@ func waitForServerToBeEmpty(ctx context.Context, rcon net.RCONClientConn, timeou
 }
 
 func (a *Autoscaler) DoScale(ctx context.Context, direction int) error {
-	if !a.scalingInProgress.CompareAndSwap(false, true) {
+	if !a.scaleLock.TryLock() {
 		return fmt.Errorf("scaling already in progress")
 	}
-	defer a.scalingInProgress.Store(false)
+	defer a.scaleLock.Unlock()
+	if a.lastScaledAt.Add(a.MinTimeBetweenActions).After(time.Now()) {
+		return fmt.Errorf("scaling too soon")
+	}
 	currentIndex, sizess, err := a.getCurrentSize(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get current size: %w", err)
@@ -194,10 +198,6 @@ func (a *Autoscaler) DoScale(ctx context.Context, direction int) error {
 	}
 
 	slog.Info("server resized")
-	a.lastScaledAt <- time.Now()
+	a.lastScaledAt = time.Now()
 	return nil
-}
-
-func (a *Autoscaler) LastScaledAt() <-chan time.Time {
-	return a.lastScaledAt
 }

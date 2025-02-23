@@ -27,10 +27,6 @@ func (a *Autoscaler) EvaluateRule(ctx context.Context, rule ScaleRule) (bool, er
 }
 
 func (a *Autoscaler) CoreLoop(ctx context.Context) error {
-	if a.scalingInProgress.Load() {
-		a.Logger.Info("scaling in progress, skipping")
-		return nil
-	}
 	for _, rule := range a.Rules {
 		res, err := a.EvaluateRule(ctx, rule)
 		if err != nil {
