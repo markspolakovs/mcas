@@ -175,6 +175,20 @@ func (a *HCloudAutoscaler) ResizeServer(ctx context.Context, profile string) err
 	if serverType == nil {
 		return fmt.Errorf("hcloud: server type not found: %s", profile)
 	}
+
+	err = a.resizeServerInner(ctx, serverType)
+	if err != nil {
+		slog.Warn("hcloud: server resize failed, starting up manually", slog.String("err", err.Error()))
+		// Start it up again
+		_, _, err := a.api.Server.Poweron(ctx, a.server)
+		if err != nil {
+			return fmt.Errorf("hcloud: failed to power on server: %w", err)
+		}
+	}
+	return err
+}
+
+func (a *HCloudAutoscaler) resizeServerInner(ctx context.Context, serverType *hcloud.ServerType) error {
 	action, _, err := a.api.Server.ChangeType(ctx, a.server, hcloud.ServerChangeTypeOpts{
 		ServerType:  serverType,
 		UpgradeDisk: false,
