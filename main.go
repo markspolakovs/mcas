@@ -25,6 +25,7 @@ type Options struct {
 	RulesFile           string        `help:"Path to the rules file" env:"RULES_FILE"`
 	Scaler              struct {
 		AllowedServerSizes []string `help:"List of allowed server sizes" env:"ALLOWED_SIZES"`
+		PreShutdownMessage string   `help:"Message to send to players before shutdown" env:"PRE_SHUTDOWN_MESSAGE" default:"Server is eligible for re-sizing. The server will be stopped and resized once nobody is online. The sizing will take a few minutes. If the server is not empty within the next 5 minutes, the re-sizing will be cancelled."`
 		Hetzner            struct {
 			APIKey               string        `env:"API_KEY"`
 			ServerName           string        `env:"SERVER_NAME"`
@@ -92,6 +93,8 @@ func main() {
 		Rules:                 rules,
 		Schedule:              schedule,
 		MinTimeBetweenActions: args.MinTimeBetweenScale,
+
+		PreShutdownMessage: args.Scaler.PreShutdownMessage,
 
 		RconAddress:  args.Minecraft.RCON.Address,
 		RconPassword: args.Minecraft.RCON.Password,

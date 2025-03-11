@@ -27,6 +27,8 @@ type AutoScalerConfig struct {
 
 	MinTimeBetweenActions time.Duration
 
+	PreShutdownMessage string
+
 	Rules    []ScaleRule
 	Schedule []ScaleSchedule
 }
@@ -46,8 +48,6 @@ func NewAutoscaler(cfg AutoScalerConfig) *Autoscaler {
 		cfg: cfg,
 	}
 }
-
-const PreShutdownMessage = `§3Yeti Says: §rServer is eligible for re-sizing. The server will be stopped and resized once nobody is online. The sizing will take a few minutes. If the server is not empty within the next 5 minutes, the re-sizing will be cancelled.`
 
 func (a *Autoscaler) getCurrentSize(ctx context.Context) (int, []string, error) {
 	sizes, err := a.Scaler.GetAvailableSizes(ctx)
@@ -101,11 +101,11 @@ func (a *Autoscaler) prepareForScalingAction(ctx context.Context) error {
 		return fmt.Errorf("failed to dial RCON: %w", err)
 	}
 	defer rcon.Close()
-	a.Logger.Debug("sending pre-shutdown message", slog.String("message", PreShutdownMessage))
-	if PreShutdownMessage[0] == '{' {
-		err = rcon.Cmd(`tellraw @a ` + PreShutdownMessage)
+	a.Logger.Debug("sending pre-shutdown message", slog.String("message", a.PreShutdownMessage))
+	if a.PreShutdownMessage[0] == '{' {
+		err = rcon.Cmd(`tellraw @a ` + a.PreShutdownMessage)
 	} else {
-		err = rcon.Cmd(`say ` + PreShutdownMessage)
+		err = rcon.Cmd(`say ` + a.PreShutdownMessage)
 	}
 	if err != nil {
 		return fmt.Errorf("failed to send tellraw command: %w", err)
